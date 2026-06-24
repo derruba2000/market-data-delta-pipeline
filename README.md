@@ -120,6 +120,42 @@ Each override affects only its own category. For example, when only `--symbols`
 is provided, FX pairs are still loaded from `reference_currencies.csv`.
 Duplicate and blank command-line values are removed.
 
+## SQLite-backed Pipeline
+
+`sqlite_market_pipeline.py` provides the same Yahoo Finance and Delta Lake
+loading behavior while also integrating with an existing SQLite database.
+Pass the database path with `--sqlite-db`:
+
+```bash
+poetry run python sqlite_market_pipeline.py \
+  --sqlite-db ./data/finance.db
+```
+
+The pipeline:
+
+- Reads market symbols and IDs from `securities`
+- Ignores rows whose `asset_class` is `CASH` (case-insensitive)
+- Continues to read FX symbols from `reference_currencies.csv`, unless
+  `--fx-symbols` is supplied
+- Merges market and FX candles into the existing Delta tables
+- Upserts market candles into `price_history` using `(security_id, date)`
+- Upserts FX candles into `fx_rate_history` using
+  `(base_currency_code, quote_currency_code, date)`
+- Logs missing symbols, extraction failures, and Delta loading failures in
+  `import_error_logs`, then continues processing other symbols/resources
+
+Yahoo FX symbols must identify a six-letter pair, such as `EURUSD=X`, so the
+pipeline can populate the base and quote currency columns. Date arguments and
+FX overrides work exactly as they do in `market_pipeline.py`:
+
+```bash
+poetry run python sqlite_market_pipeline.py \
+  --sqlite-db ./data/finance.db \
+  --fx-symbols EURUSD=X GBPUSD=X \
+  --from-date 2026-01-01 \
+  --to-date 2026-01-31
+```
+
 ## Configuration
 
 FinancePipe loads configuration from environment variables and automatically
