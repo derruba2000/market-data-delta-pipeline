@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import os
+from collections.abc import Sequence
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,96 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 LOGGER = logging.getLogger(__name__)
+
+
+def parse_iso_date(value: str) -> date:
+    """Parse a command-line date in ISO YYYY-MM-DD format."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date '{value}'. Expected YYYY-MM-DD."
+        ) from exc
+
+
+def parse_symbol_list(values: list[str]) -> list[str]:
+    """Normalize space- or comma-separated symbols while preserving order."""
+    symbols: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        for item in value.split(","):
+            symbol = item.strip()
+            if symbol and symbol not in seen:
+                symbols.append(symbol)
+                seen.add(symbol)
+
+    return symbols
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse and validate the optional extraction interval."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fetch Yahoo Finance daily candles and merge them into Delta tables."
+        )
+    )
+    parser.add_argument(
+        "--from-date",
+        "--fromDate",
+        dest="from_date",
+        type=parse_iso_date,
+        help="First date to extract, inclusive (YYYY-MM-DD).",
+    )
+    parser.add_argument(
+        "--to-date",
+        "--toDate",
+        dest="to_date",
+        type=parse_iso_date,
+        help="Last date to extract, inclusive (YYYY-MM-DD).",
+    )
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        metavar="SYMBOL",
+        help=(
+            "Market symbols to extract instead of reference_tickers.csv. "
+            "Accepts space- or comma-separated values."
+        ),
+    )
+    parser.add_argument(
+        "--fx-symbols",
+        "--fxSymbols",
+        dest="fx_symbols",
+        nargs="+",
+        metavar="FX_SYMBOL",
+        help=(
+            "FX symbols to extract instead of reference_currencies.csv. "
+            "Accepts space- or comma-separated values."
+        ),
+    )
+
+    args = parser.parse_args(argv)
+    args.symbols = parse_symbol_list(args.symbols) if args.symbols else None
+    args.fx_symbols = (
+        parse_symbol_list(args.fx_symbols) if args.fx_symbols else None
+    )
+    if args.symbols == []:
+        parser.error("--symbols must contain at least one non-empty symbol.")
+    if args.fx_symbols == []:
+        parser.error("--fx-symbols must contain at least one non-empty symbol.")
+
+    if (args.from_date is None) != (args.to_date is None):
+        parser.error("--from-date and --to-date must be provided together.")
+
+    if (
+        args.from_date is not None
+        and args.to_date is not None
+        and args.from_date > args.to_date
+    ):
+        parser.error("--from-date cannot be later than --to-date.")
+
+    return args
 
 
 def load_config() -> tuple[Path, Path]:
@@ -76,53 +169,103 @@ def load_reference_symbols(file_name: str, reference_data_dir: Path) -> list[str
     return cleaned_symbols
 
 
-def fetch_latest_candle(symbol: str) -> dict[str, Any] | None:
-    """Fetch the latest 1-day candle from Yahoo Finance for a symbol."""
+def fetch_candles(
+    symbol: str,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch daily candles for a symbol, defaulting to the latest day."""
+    history_kwargs: dict[str, Any]
+    if from_date is None or to_date is None:
+        history_kwargs = {"period": "1d"}
+    else:
+        history_kwargs = {
+            "start": from_date.isoformat(),
+            # yfinance treats end as exclusive; the CLI interval is inclusive.
+            "end": (to_date + timedelta(days=1)).isoformat(),
+            "interval": "1d",
+        }
+
+    LOGGER.info("Fetching Yahoo Finance data for symbol: %s", symbol)
+
     try:
-        history = yf.Ticker(symbol).history(period="1d")
+        history = yf.Ticker(symbol).history(**history_kwargs)
     except Exception as exc:  # pragma: no cover - network/runtime defensive branch
         LOGGER.error("Yahoo Finance request failed for %s: %s", symbol, exc)
-        return None
+        return []
 
     if history.empty:
         LOGGER.warning("No data returned for symbol: %s", symbol)
-        return None
+        return []
 
-    latest_row = history.iloc[-1]
-    candle_date = history.index[-1]
+    records: list[dict[str, Any]] = []
+    for candle_timestamp, candle in history.iterrows():
+        records.append(
+            {
+                "symbol": symbol,
+                "date": candle_timestamp.date().isoformat(),
+                "open": None
+                if pd.isna(candle.get("Open"))
+                else float(candle["Open"]),
+                "high": None
+                if pd.isna(candle.get("High"))
+                else float(candle["High"]),
+                "low": None if pd.isna(candle.get("Low")) else float(candle["Low"]),
+                "close": None
+                if pd.isna(candle.get("Close"))
+                else float(candle["Close"]),
+                "volume": None
+                if pd.isna(candle.get("Volume"))
+                else int(candle["Volume"]),
+            }
+        )
 
-    return {
-        "symbol": symbol,
-        "date": candle_date.date().isoformat(),
-        "open": None if pd.isna(latest_row.get("Open")) else float(latest_row["Open"]),
-        "high": None if pd.isna(latest_row.get("High")) else float(latest_row["High"]),
-        "low": None if pd.isna(latest_row.get("Low")) else float(latest_row["Low"]),
-        "close": None if pd.isna(latest_row.get("Close")) else float(latest_row["Close"]),
-        "volume": None if pd.isna(latest_row.get("Volume")) else int(latest_row["Volume"]),
-    }
+    return records
 
 
-@dlt.resource(name="market_tickers", write_disposition="append")
-def market_tickers(symbols: list[str]):
+MERGE_DISPOSITION = {"disposition": "merge", "strategy": "upsert"}
+PRIMARY_KEY = ("symbol", "date")
+
+
+@dlt.resource(
+    name="market_tickers",
+    write_disposition=MERGE_DISPOSITION,
+    primary_key=PRIMARY_KEY,
+)
+def market_tickers(
+    symbols: list[str],
+    from_date: date | None = None,
+    to_date: date | None = None,
+):
     for symbol in symbols:
-        record = fetch_latest_candle(symbol)
-        if record:
-            yield record
+        yield from fetch_candles(symbol, from_date, to_date)
 
 
-@dlt.resource(name="currencies", write_disposition="append")
-def currencies(symbols: list[str]):
+@dlt.resource(
+    name="currencies",
+    write_disposition=MERGE_DISPOSITION,
+    primary_key=PRIMARY_KEY,
+)
+def currencies(
+    symbols: list[str],
+    from_date: date | None = None,
+    to_date: date | None = None,
+):
     for symbol in symbols:
-        record = fetch_latest_candle(symbol)
-        if record:
-            yield record
+        yield from fetch_candles(symbol, from_date, to_date)
 
 
-def run() -> int:
+def run(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+
     try:
         reference_data_dir, target_delta_dir = load_config()
-        market_symbols = load_reference_symbols("reference_tickers.csv", reference_data_dir)
-        currency_symbols = load_reference_symbols("reference_currencies.csv", reference_data_dir)
+        market_symbols = args.symbols or load_reference_symbols(
+            "reference_tickers.csv", reference_data_dir
+        )
+        currency_symbols = args.fx_symbols or load_reference_symbols(
+            "reference_currencies.csv", reference_data_dir
+        )
     except (ValueError, FileNotFoundError) as exc:
         LOGGER.error("Configuration/reference loading error: %s", exc)
         return 1
@@ -144,7 +287,7 @@ def run() -> int:
 
     if market_symbols:
         market_info = pipeline.run(
-            market_tickers(market_symbols),
+            market_tickers(market_symbols, args.from_date, args.to_date),
             table_format="delta",
         )
         print("market_tickers load summary:")
@@ -152,7 +295,7 @@ def run() -> int:
 
     if currency_symbols:
         currency_info = pipeline.run(
-            currencies(currency_symbols),
+            currencies(currency_symbols, args.from_date, args.to_date),
             table_format="delta",
         )
         print("currencies load summary:")

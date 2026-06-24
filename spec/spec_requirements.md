@@ -9,7 +9,7 @@ The .env variable must have a target folder variable and the input folder variab
 
 
 * `REFERENCE_DATA_DIR`: The path to the folder containing your source CSV files.
-* `TARGET_DELTA_DIR`: The path to the local or network file system directory where `dlt` will initialize and append the Delta tables.
+* `TARGET_DELTA_DIR`: The path to the local or network file system directory where `dlt` will initialize and merge the Delta tables.
 
 ---
 
@@ -25,7 +25,7 @@ TARGET_DELTA_DIR="./data/delta_lake"
 ### Key Rules for AI Execution:
 
 1. **Idempotency:** Pipelines must be runnable multiple times a day without corrupting data.
-2. **Delta Constraints:** Ensure schemas match daily. Use `table_format="delta"` and `write_disposition="append"`.
+2. **Delta Constraints:** Ensure schemas match daily. Use `table_format="delta"` and merge/upsert records with `symbol` and `date` as the composite primary key.
 3. **Data Isolation:** `market_tickers` and `currencies` must be loaded into distinct paths inside `TARGET_DELTA_DIR`.
 
 ---
@@ -74,14 +74,16 @@ TARGET_DELTA_DIR="./data/delta_lake"
 
 ## Epic 3: Market Data Extraction & Delta Table Loading via dlt
 
-> **Description:** Implement `dlt` sources and resources to fetch daily market candles from Yahoo Finance and incrementally append them to standalone Delta tables.
+> **Description:** Implement `dlt` sources and resources to fetch daily market candles from Yahoo Finance and incrementally merge them into standalone Delta tables.
 
 ### Story 3.1: Implement Market Tickers Resource (Stocks/ETFs/Funds)
 
 * **User Story:** As a data engineer, I want a `dlt` resource that loops through the stock/ETF symbols and fetches their latest single-day metrics.
 * **Acceptance Criteria:**
-* [ ] Create a resource decorated with `@dlt.resource(name="market_tickers", write_disposition="append")`.
+* [ ] Create a `market_tickers` resource configured for merge/upsert with `symbol` and `date` as its composite primary key.
 * [ ] Call `yf.Ticker(symbol).history(period="1d")` for each ticker.
+* [ ] Support an optional inclusive interval using `--from-date` and `--to-date`, while retaining the latest-day behavior when no interval is supplied.
+* [ ] Support an optional `--symbols` list that replaces the ticker reference file contents for the current run.
 * [ ] Format the output row as a dictionary containing: `symbol`, `date`, `open`, `high`, `low`, `close`, and `volume`.
 * [ ] Use `yield` to stream data points iteratively.
 
@@ -91,8 +93,9 @@ TARGET_DELTA_DIR="./data/delta_lake"
 
 * **User Story:** As a data analyst, I want currency pairings extracted into an isolated pipeline resource so that Forex data is kept strictly separate from equities.
 * **Acceptance Criteria:**
-* [ ] Create a resource decorated with `@dlt.resource(name="currencies", write_disposition="append")`.
+* [ ] Create a `currencies` resource configured for merge/upsert with `symbol` and `date` as its composite primary key.
 * [ ] Accept the ticker formats required by Yahoo Finance (e.g., `EURUSD=X`).
+* [ ] Support an optional `--fx-symbols` list that replaces the currency reference file contents for the current run.
 * [ ] Structure the payload dictionary identically to the market data schema for uniformity.
 
 
