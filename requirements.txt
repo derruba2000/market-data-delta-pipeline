@@ -1,0 +1,4 @@
+dlt[deltalake]
+yfinance
+pandas
+python-dotenv

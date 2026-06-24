@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "financepipe"
+version = "0.1.0"
+description = "Daily Yahoo Finance to Delta Lake ingestion pipeline"
+authors = ["FinancePipe Team <team@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+dlt = {extras = ["deltalake"], version = "*"}
+yfinance = "*"
+pandas = "*"
+python-dotenv = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
