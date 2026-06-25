@@ -12,7 +12,13 @@ deltalake = ">=1.6.1"
 yfinance = "*"
 pandas = "*"
 python-dotenv = "*"
+yahooquery = "^2.4.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)"
+]

@@ -156,6 +156,65 @@ poetry run python sqlite_market_pipeline.py \
   --to-date 2026-01-31
 ```
 
+## Security Reference Pipeline
+
+`security_reference_pipeline.py` reads the same
+`reference_tickers.csv` file and stores normalized Yahoo Finance reference data
+in an existing SQLite database:
+
+```bash
+poetry run python security_reference_pipeline.py \
+  --sqlite-db /Users/joaoramo/Data/trading_experiment/portfolio_management.sqlite3
+```
+
+Use `--symbols` to override the reference file for one run:
+
+```bash
+poetry run python security_reference_pipeline.py \
+  --sqlite-db ./data/finance.db \
+  --symbols MSFT AAPL VWRP.L
+```
+
+By default, the nearest option expiration is loaded when options are available.
+Change the number of expirations or disable option extraction:
+
+```bash
+# Load the nearest three expirations.
+poetry run python security_reference_pipeline.py \
+  --sqlite-db ./data/finance.db \
+  --options-expirations 3
+
+# Skip options.
+poetry run python security_reference_pipeline.py \
+  --sqlite-db ./data/finance.db \
+  --options-expirations 0
+```
+
+The pipeline creates and refreshes these normalized tables:
+
+| Table | Contents |
+| --- | --- |
+| `yahoo_security_snapshots` | Common ticker profile fields and the raw info payload |
+| `yahoo_security_info` | Typed general-info attributes |
+| `yahoo_calendar_events` | Earnings, dividend, and other calendar values |
+| `yahoo_analyst_targets` | Analyst current, high, low, mean, and median targets |
+| `yahoo_financial_facts` | Annual and quarterly financial-statement facts |
+| `yahoo_option_contracts` | Calls and puts for the requested expirations |
+| `yahoo_fund_profiles` | Fund family, category, structure, fees, and description |
+| `yahoo_fund_asset_allocation` | Stock, bond, cash, and other allocations |
+| `yahoo_fund_holdings` | Ranked top holdings and portfolio weights |
+| `yahoo_fund_sector_weightings` | Economic-sector exposure |
+| `yahoo_fund_metrics` | Fund operations and equity/bond statistics |
+| `yahoo_fund_performance` | Trailing, annual, and category-relative returns |
+
+Every table uses the original Yahoo `symbol` as part of its key. Each ticker is
+updated in one SQLite transaction, and a failure for one symbol does not stop
+the remaining symbols.
+
+Daily historical prices remain the responsibility of `market_pipeline.py` and
+`sqlite_market_pipeline.py`. Yahoo WebSocket `live()` data is streaming data,
+so it is intentionally not included in this repeatable snapshot pipeline.
+
 ## Configuration
 
 FinancePipe loads configuration from environment variables and automatically

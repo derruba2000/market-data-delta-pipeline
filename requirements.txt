@@ -1,4 +1,5 @@
 dlt[deltalake]
 yfinance
+yahooquery
 pandas
 python-dotenv
