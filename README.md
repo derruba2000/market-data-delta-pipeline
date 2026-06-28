@@ -100,11 +100,16 @@ not prevent the remaining symbols from being processed.
 ### Run
 
 ```bash
-# Latest one-day candle for all reference symbols
+# Latest one-day candle for all reference symbols (CSV mode)
 poetry run python market_pipeline.py
 
-# Inclusive date range
+# Read symbols from the securities table of an existing SQLite database
 poetry run python market_pipeline.py \
+  --sqlite-db /path/to/portfolio_management.sqlite3
+
+# Inclusive date range with database symbols
+poetry run python market_pipeline.py \
+  --sqlite-db /path/to/portfolio_management.sqlite3 \
   --from-date 2026-01-01 \
   --to-date   2026-01-31
 
@@ -113,6 +118,11 @@ poetry run python market_pipeline.py \
   --fromDate 2026-01-01 \
   --toDate   2026-01-31
 ```
+
+When `--sqlite-db` is provided, the pipeline reads every non-`CASH` ticker from
+the `securities` table (ordered by ticker) instead of `reference_tickers.csv`.
+Passing `--symbols` alongside `--sqlite-db` overrides the database and uses the
+explicit list instead.
 
 ### Symbol overrides
 

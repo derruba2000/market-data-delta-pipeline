@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sqlite3
 from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
@@ -54,6 +55,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument(
+        "--sqlite-db",
+        "--database",
+        dest="sqlite_db",
+        type=Path,
+        default=None,
+        help=(
+            "Path to an existing SQLite database. When provided, market symbols "
+            "are read from the 'securities' table instead of reference_tickers.csv."
+        ),
+    )
+    parser.add_argument(
         "--from-date",
         "--fromDate",
         dest="from_date",
@@ -89,6 +101,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     args = parser.parse_args(argv)
+    if args.sqlite_db is not None:
+        args.sqlite_db = args.sqlite_db.expanduser()
     args.symbols = parse_symbol_list(args.symbols) if args.symbols else None
     args.fx_symbols = (
         parse_symbol_list(args.fx_symbols) if args.fx_symbols else None
@@ -137,6 +151,28 @@ def load_config() -> tuple[Path, Path]:
     target_delta_dir = Path(target_delta_dir_raw).expanduser()
 
     return reference_data_dir, target_delta_dir
+
+
+def load_securities_from_db(database_path: Path) -> list[str]:
+    """Load non-cash tickers from the securities table in deterministic order."""
+    if not database_path.is_file():
+        raise FileNotFoundError(f"SQLite database not found: {database_path}")
+
+    connection = sqlite3.connect(database_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT TRIM(ticker)
+            FROM securities
+            WHERE UPPER(TRIM(asset_class)) <> 'CASH'
+              AND TRIM(ticker) <> ''
+            ORDER BY ticker
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return [str(row[0]) for row in rows]
 
 
 def load_reference_symbols(file_name: str, reference_data_dir: Path) -> list[str]:
@@ -260,13 +296,21 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         reference_data_dir, target_delta_dir = load_config()
-        market_symbols = args.symbols or load_reference_symbols(
-            "reference_tickers.csv", reference_data_dir
-        )
+        if args.sqlite_db is not None and args.symbols is None:
+            market_symbols = load_securities_from_db(args.sqlite_db)
+            LOGGER.info(
+                "Loaded %d securities from database: %s",
+                len(market_symbols),
+                args.sqlite_db,
+            )
+        else:
+            market_symbols = args.symbols or load_reference_symbols(
+                "reference_tickers.csv", reference_data_dir
+            )
         currency_symbols = args.fx_symbols or load_reference_symbols(
             "reference_currencies.csv", reference_data_dir
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, sqlite3.Error) as exc:
         LOGGER.error("Configuration/reference loading error: %s", exc)
         return 1
 
